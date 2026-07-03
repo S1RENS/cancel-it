@@ -12,3 +12,12 @@ wheels/
 **.env
 
 .DS_store
+
+# Local poll database (SQLite + WAL siblings)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Streamlit secrets
+.streamlit/secrets.toml

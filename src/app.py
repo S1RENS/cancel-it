@@ -1,134 +1,212 @@
-import uuid
+import os
+import sys
 
-import streamlit as st
+# Some launchers (e.g. Streamlit Community Cloud) don't put this file's
+# directory on sys.path the way a local `streamlit run src/app.py` does,
+# which breaks the sibling imports below.
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
-from src import config, storage
-from src.logic import calculate_outcome
+import streamlit as st  # noqa: E402
 
-st.set_page_config(page_title=config.APP_TITLE, page_icon=config.APP_ICON)
+import config  # noqa: E402
+import storage  # noqa: E402
 
-polls = storage.get_polls()
-lock = storage.get_lock()
-
-
-st.set_page_config(page_title="Cancel-It Vote", page_icon="🚫")
+st.set_page_config(
+    page_title=config.APP_TITLE,
+    page_icon=config.APP_ICON,
+    initial_sidebar_state="collapsed",
+)
 
 # Hide Streamlit elements for "App-like" feel
-hide_streamlit_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            </style>
-            """
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-# URL Routing
-query_params = st.query_params
-poll_id = query_params.get("poll", None)
+VOTE_CHOICES = {
+    "🟢 I'm going": {"type": "go"},
+    "🟡 I'd rather not, but I'll follow the group": {"type": "soft"},
+    "🔴 I'm not going": {"type": "hard"},
+    "🔗 I go only if someone else goes": None,  # needs a wingman target
+}
 
-# === VIEW 1: CREATE POLL ===
-if not poll_id:
-    st.title("Cancel-It")
-    st.write("### The Abilene Paradox Solver")
 
-    with st.form("create_form"):
-        st.write("WHO IS INVITED?")
-        st.caption("Enter first names, separated by commas.")
-        raw_names = st.text_area("Participants", value="Alice, Bob, Charlie")
+def get_base_url() -> str:
+    """Base URL for share links: explicit override, else the URL the
+    visitor is actually using, else the local dev default."""
+    base = os.environ.get("BASE_URL")
+    if not base:
+        try:
+            base = st.secrets.get("BASE_URL")
+        except Exception:
+            base = None
+    if not base:
+        base = st.context.url  # scheme+host+port+path, query params stripped
+    if not base:
+        base = "http://localhost:8501"
+    return base.rstrip("/")
 
-        submitted = st.form_submit_button("Create Secret Vote")
 
-        if submitted:
-            # Clean up names
-            participants = [n.strip() for n in raw_names.split(",") if n.strip()]
+def parse_participants(raw: str) -> list[str]:
+    """Split comma-separated names, validating count and uniqueness."""
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    if len(names) < 2:
+        raise ValueError("You need at least 2 people for a group decision.")
+    if len(names) > config.MAX_PARTICIPANTS:
+        raise ValueError(
+            f"That's a lot of friends! Max {config.MAX_PARTICIPANTS} people."
+        )
+    seen: dict[str, str] = {}
+    for name in names:
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(
+                f'"{name}" appears more than once. '
+                "Give everyone a unique name (add a last initial?)."
+            )
+        seen[key] = name
+    return names
 
-            if len(participants) < 2:
-                st.error("You need at least 2 people.")
-            else:
-                new_id = str(uuid.uuid4())[:8]
-                polls[new_id] = {
-                    "participants": participants,
-                    "votes": {},
-                    "status": "active",
-                }
-                st.success("Poll Created!")
-                # In production, use your actual domain/IP
-                link = f"http://localhost:8501/?poll={new_id}"
-                st.code(link, language="text")
-                st.write("Copy this link to your group chat.")
 
-# === VIEW 2: VOTING BOOTH ===
-else:
-    if poll_id not in polls:
-        st.error("🚫 Poll not found. It may have expired.")
-        st.stop()
-
-    poll = polls[poll_id]
-
-    # HEADER
-    st.title("Event Status")
-
-    # RESULTS DISPLAY
-    if poll["status"] != "active":
-        if poll["status"] == "cancelled":
-            st.error("🛑 EVENT CANCELLED")
-            st.write("The majority chose to opt out.")
-        else:
-            st.success("✅ EVENT CONFIRMED")
-            st.write("The group is going.")
-        st.stop()
-
-    # VOTING FORM
-    st.write("Vote secretly. No notifications are sent.")
-
-    # 1. Identify User
-    st.write("### 1. Who are you?")
-    remaining_voters = [p for p in poll["participants"] if p not in poll["votes"]]
-
-    # If user already voted, just show status
-    if len(remaining_voters) == 0:
-        st.info("Waiting for results...")
-        calculate_outcome(poll)  # Trigger calc if this is the last refresh
-        st.rerun()
-
-    me = st.selectbox("Select your name", ["Select..."] + remaining_voters)
-
-    if me != "Select...":
-        # 2. Cast Vote
-        st.write(f"### 2. Hi {me}, what do you want to do?")
-
-        vote_choice = st.radio(
-            "Select an option:",
-            [
-                "🟢 I'm definitely going (Go)",
-                "🟡 I'd rather not, but will follow group (Soft Cancel)",
-                "🔴 I am NOT going (Hard Cancel)",
-                "🔗 I go only if [Wingman] goes",
-            ],
+def render_create_view() -> None:
+    st.title(f"{config.APP_ICON} {config.APP_TITLE}")
+    st.write("**Find out if anyone actually wants to go — without asking.**")
+    with st.expander("How it works"):
+        st.markdown(
+            "1. List everyone invited and share the link in your group chat.\n"
+            "2. Everyone votes **secretly**. Nobody sees anything until the "
+            "last vote is in.\n"
+            "3. If a majority would rather cancel, the event is cancelled — "
+            "no names, no blame."
         )
 
-        final_vote_data = {}
+    with st.form("create_form"):
+        event_name = st.text_input(
+            "What's the event? (optional)", placeholder="Friday dinner"
+        )
+        raw_names = st.text_area(
+            "Who's invited?",
+            placeholder="Alice, Bob, Charlie",
+            help="First names, separated by commas.",
+        )
+        submitted = st.form_submit_button("Create secret vote", type="primary")
 
-        if "Wingman" in vote_choice:
-            # Filter self out of wingman list
-            others = [p for p in poll["participants"] if p != me]
-            wingman = st.selectbox("Who is your Wingman?", others)
-            final_vote_data = {"type": "conditional", "target": wingman}
-        elif "definitely" in vote_choice:
-            final_vote_data = {"type": "go"}
-        elif "rather not" in vote_choice:
-            final_vote_data = {"type": "soft"}
-        elif "NOT going" in vote_choice:
-            final_vote_data = {"type": "hard"}
+    if submitted:
+        try:
+            participants = parse_participants(raw_names)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state["created_poll"] = storage.create_poll(
+                participants, name=event_name.strip()
+            )
 
-        if st.button("Cast Secret Vote"):
-            poll["votes"][me] = final_vote_data
-
-            # Check if this was the last vote needed
-            if len(poll["votes"]) >= len(poll["participants"]):
-                calculate_outcome(poll)
-
+    # Rendered outside the submit branch so it survives Streamlit reruns.
+    poll_id = st.session_state.get("created_poll")
+    if poll_id:
+        st.success("Poll created!")
+        st.code(f"{get_base_url()}/?poll={poll_id}", language=None)
+        st.caption(
+            "Paste this into your group chat. "
+            "Votes are secret until everyone has voted."
+        )
+        if st.button("Create another poll"):
+            st.session_state.pop("created_poll", None)
             st.rerun()
 
-    st.write("---")
-    st.caption(f"Waiting for {len(remaining_voters)} more people to vote.")
+
+def render_outcome(poll: dict) -> None:
+    if poll.get("name"):
+        st.subheader(poll["name"])
+    if poll["status"] == "cancelled":
+        st.error("🛑 EVENT CANCELLED")
+        st.write("The group has spoken. Sweatpants for everyone — no questions asked.")
+    else:
+        st.success("✅ EVENT IS ON")
+        st.write("The group actually wants to go. See you there!")
+        st.balloons()
+    st.caption("Individual votes are never revealed. That's the whole point.")
+
+
+def render_poll_view(poll_id: str) -> None:
+    poll = storage.get_poll(poll_id)
+    if poll is None:
+        st.title(f"{config.APP_ICON} {config.APP_TITLE}")
+        st.error("This poll doesn't exist or has expired.")
+        st.link_button("Start your own", get_base_url())
+        return
+
+    if poll["status"] != "active":
+        render_outcome(poll)
+        return
+
+    st.title("🤫 Secret Vote")
+    if poll.get("name"):
+        st.subheader(poll["name"])
+    st.write("Vote secretly. Nothing is revealed until the last vote is in.")
+
+    voted, total = len(poll["votes"]), len(poll["participants"])
+    st.progress(voted / total, text=f"{voted} of {total} votes are in")
+
+    # All participants are always listed so the dropdown never leaks
+    # who has already voted.
+    me = st.selectbox(
+        "Who are you?",
+        poll["participants"],
+        index=None,
+        placeholder="Select your name",
+        key=f"voter::{poll_id}",
+    )
+    if me is None:
+        return
+
+    already_voted = me in poll["votes"] or st.session_state.get(f"voted::{poll_id}")
+    if already_voted:
+        st.info("Your vote is sealed. Waiting for the others…")
+        if st.button("🔄 Refresh"):
+            st.rerun()
+        return
+
+    choice = st.radio(
+        f"{me}, what do you actually want?",
+        list(VOTE_CHOICES),
+        key=f"choice::{poll_id}",
+    )
+    vote = VOTE_CHOICES[choice]
+    if vote is None:  # conditional: pick a wingman
+        others = [p for p in poll["participants"] if p != me]
+        wingman = st.selectbox(
+            "Who's your wingman?",
+            others,
+            index=None,
+            placeholder="Select a person",
+            key=f"wingman::{poll_id}",
+            help="Your vote copies theirs: they go, you go. They bail, you bail.",
+        )
+        vote = {"type": "conditional", "target": wingman} if wingman else None
+
+    if st.button("🤫 Cast my secret vote", type="primary", disabled=vote is None):
+        try:
+            storage.cast_vote(poll_id, me, vote)
+        except storage.PollConcludedError:
+            pass  # someone finished it meanwhile; rerun shows the outcome
+        st.session_state[f"voted::{poll_id}"] = True
+        st.rerun()
+
+
+def main() -> None:
+    poll_id = st.query_params.get("poll")
+    if poll_id:
+        render_poll_view(poll_id)
+    else:
+        render_create_view()
+
+
+main()

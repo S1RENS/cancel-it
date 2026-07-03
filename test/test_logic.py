@@ -1,6 +1,6 @@
 import pytest
 
-from src import logic
+import logic
 
 
 def test_simple_majority_go():
@@ -75,8 +75,19 @@ def test_outcome_variations(votes, expected_status):
         "status": "active",
     }
     logic.calculate_outcome(poll_data)
-    assert (
-        poll_data["status"] == "expected_status"
-        if expected_status == "error"
-        else expected_status
-    )
+    assert poll_data["status"] == expected_status
+
+
+def test_broken_chain_domino():
+    """Scenario: A needs B, B needs C, C hard cancels -> all cancel."""
+    poll_data = {
+        "participants": ["Alice", "Bob", "Charlie"],
+        "votes": {
+            "Alice": {"type": "conditional", "target": "Bob"},
+            "Bob": {"type": "conditional", "target": "Charlie"},
+            "Charlie": {"type": "hard"},
+        },
+        "status": "active",
+    }
+    logic.calculate_outcome(poll_data)
+    assert poll_data["status"] == "cancelled"
