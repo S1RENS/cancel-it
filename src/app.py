@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 # Some launchers (e.g. Streamlit Community Cloud) don't put this file's
 # directory on sys.path the way a local `streamlit run src/app.py` does,
@@ -36,6 +37,21 @@ VOTE_CHOICES = {
     "🔴 I'm not going": {"type": "hard"},
     "🔗 I go only if someone else goes": None,  # needs a wingman target
 }
+
+POLL_DURATIONS = {
+    "1 hour": 1,
+    "3 hours": 3,
+    "6 hours": 6,
+    "12 hours": 12,
+    "24 hours": 24,
+    "48 hours": 48,
+}
+
+
+def format_time_left(deadline: float) -> str:
+    seconds = max(0, int(deadline - time.time()))
+    hours, minutes = divmod(seconds // 60, 60)
+    return f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
 
 def get_base_url() -> str:
@@ -96,6 +112,13 @@ def render_create_view() -> None:
             placeholder="Alice, Bob, Charlie",
             help="First names, separated by commas.",
         )
+        duration = st.select_slider(
+            "Voting closes after",
+            options=list(POLL_DURATIONS),
+            value="24 hours",
+            help="When time runs out, the votes that are in decide the "
+            "outcome — nobody can hold the group hostage by not voting.",
+        )
         submitted = st.form_submit_button("Create secret vote", type="primary")
 
     if submitted:
@@ -105,7 +128,9 @@ def render_create_view() -> None:
             st.error(str(exc))
         else:
             st.session_state["created_poll"] = storage.create_poll(
-                participants, name=event_name.strip()
+                participants,
+                name=event_name.strip(),
+                duration_hours=POLL_DURATIONS[duration],
             )
 
     # Rendered outside the submit branch so it survives Streamlit reruns.
@@ -125,6 +150,11 @@ def render_create_view() -> None:
 def render_outcome(poll: dict) -> None:
     if poll.get("name"):
         st.subheader(poll["name"])
+    if poll.get("timed_out"):
+        st.info(
+            "⏳ Time ran out before everyone voted, so the votes that "
+            "were in decided the outcome."
+        )
     if poll["status"] == "cancelled":
         st.error("🛑 EVENT CANCELLED")
         st.write("The group has spoken. Sweatpants for everyone — no questions asked.")
@@ -154,6 +184,11 @@ def render_poll_view(poll_id: str) -> None:
 
     voted, total = len(poll["votes"]), len(poll["participants"])
     st.progress(voted / total, text=f"{voted} of {total} votes are in")
+    if poll.get("deadline"):
+        st.caption(
+            f"⏳ Voting closes in {format_time_left(poll['deadline'])}. "
+            "If time runs out, the votes that are in decide."
+        )
 
     # All participants are always listed so the dropdown never leaks
     # who has already voted.

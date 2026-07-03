@@ -15,12 +15,19 @@ import json
 import os
 import secrets
 import sqlite3
+import time
 
 import config
 import logic
 
 VALID_VOTE_TYPES = {"go", "soft", "hard", "conditional"}
 POLL_RETENTION_DAYS = 30
+DEFAULT_POLL_DURATION_HOURS = 24.0
+MAX_POLL_DURATION_HOURS = 24.0 * 7
+
+
+def _now() -> float:
+    return time.time()
 
 
 class PollNotFoundError(Exception):
@@ -57,13 +64,26 @@ def _new_poll_id() -> str:
     return secrets.token_urlsafe(config.POLL_ID_LENGTH)[: config.POLL_ID_LENGTH]
 
 
-def create_poll(participants: list[str], name: str = "") -> str:
+def is_expired(poll: dict) -> bool:
+    """True when an active poll's voting deadline has passed."""
+    deadline = poll.get("deadline")
+    return poll["status"] == "active" and deadline is not None and _now() > deadline
+
+
+def create_poll(
+    participants: list[str],
+    name: str = "",
+    duration_hours: float = DEFAULT_POLL_DURATION_HOURS,
+) -> str:
     """Create a poll and return its id. Also prunes old polls."""
+    if not 0 < duration_hours <= MAX_POLL_DURATION_HOURS:
+        raise ValueError(f"duration_hours must be in (0, {MAX_POLL_DURATION_HOURS}]")
     poll = {
         "name": name,
         "participants": list(participants),
         "votes": {},
         "status": "active",
+        "deadline": _now() + duration_hours * 3600,
     }
     conn = _connect()
     try:
@@ -85,7 +105,48 @@ def get_poll(poll_id: str) -> dict | None:
     conn = _connect()
     try:
         row = conn.execute("SELECT data FROM polls WHERE id = ?", (poll_id,)).fetchone()
-        return json.loads(row[0]) if row else None
+        poll = json.loads(row[0]) if row else None
+    finally:
+        conn.close()
+    if poll is not None and is_expired(poll):
+        return _finalize_expired(poll_id) or poll
+    return poll
+
+
+def _finalize_expired(poll_id: str) -> dict | None:
+    """Conclude a poll whose deadline passed, using the votes that are in.
+
+    Runs under the same write lock as cast_vote, so a simultaneous last
+    vote and expiry can't both decide the poll.
+    """
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT data FROM polls WHERE id = ?", (poll_id,)
+            ).fetchone()
+            if row is None:
+                conn.execute("ROLLBACK")
+                return None
+            poll = json.loads(row[0])
+            if not is_expired(poll):  # someone else already concluded it
+                conn.execute("ROLLBACK")
+                return poll
+            logic.calculate_outcome(poll)
+            poll["timed_out"] = True
+            conn.execute(
+                "UPDATE polls SET data = ? WHERE id = ?",
+                (json.dumps(poll), poll_id),
+            )
+            conn.execute("COMMIT")
+            return poll
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass  # transaction already closed
+            raise
     finally:
         conn.close()
 
@@ -110,6 +171,15 @@ def cast_vote(poll_id: str, voter: str, vote: dict) -> tuple[dict, bool]:
             poll = json.loads(row[0])
 
             if poll["status"] != "active":
+                raise PollConcludedError(poll_id)
+            if is_expired(poll):
+                logic.calculate_outcome(poll)
+                poll["timed_out"] = True
+                conn.execute(
+                    "UPDATE polls SET data = ? WHERE id = ?",
+                    (json.dumps(poll), poll_id),
+                )
+                conn.execute("COMMIT")
                 raise PollConcludedError(poll_id)
             if voter not in poll["participants"]:
                 raise ValueError(f"Unknown participant: {voter!r}")

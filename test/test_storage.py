@@ -1,8 +1,15 @@
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 import storage
+
+
+def _time_travel(monkeypatch, hours: float) -> None:
+    """Make storage believe `hours` have passed."""
+    offset = hours * 3600
+    monkeypatch.setattr(storage, "_now", lambda: time.time() + offset)
 
 
 @pytest.fixture(autouse=True)
@@ -13,12 +20,21 @@ def _tmp_db(tmp_path, monkeypatch):
 def test_create_and_get_roundtrip():
     poll_id = storage.create_poll(["Alice", "Bob"], name="Friday dinner")
     poll = storage.get_poll(poll_id)
+    deadline = poll.pop("deadline")
     assert poll == {
         "name": "Friday dinner",
         "participants": ["Alice", "Bob"],
         "votes": {},
         "status": "active",
     }
+    expected = time.time() + storage.DEFAULT_POLL_DURATION_HOURS * 3600
+    assert abs(deadline - expected) < 60
+
+
+@pytest.mark.parametrize("bad_duration", [0, -1, 24 * 7 + 1])
+def test_invalid_duration_rejected(bad_duration):
+    with pytest.raises(ValueError):
+        storage.create_poll(["A", "B"], duration_hours=bad_duration)
 
 
 def test_poll_ids_are_short_and_unique():
@@ -86,6 +102,67 @@ def test_vote_on_concluded_poll_raises():
     storage.cast_vote(poll_id, "B", {"type": "go"})
     with pytest.raises(storage.PollConcludedError):
         storage.cast_vote(poll_id, "A", {"type": "hard"})
+
+
+def test_expired_poll_finalizes_on_read(monkeypatch):
+    poll_id = storage.create_poll(["A", "B", "C"], duration_hours=1)
+    storage.cast_vote(poll_id, "A", {"type": "hard"})
+    storage.cast_vote(poll_id, "B", {"type": "hard"})
+
+    _time_travel(monkeypatch, 2)
+    poll = storage.get_poll(poll_id)
+    # 2 cancels of 3 participants is a majority; C's silence counts as go
+    assert poll["status"] == "cancelled"
+    assert poll["timed_out"] is True
+
+    # concluded state persisted, and stays concluded at normal time too
+    monkeypatch.setattr(storage, "_now", time.time)
+    assert storage.get_poll(poll_id)["status"] == "cancelled"
+
+
+def test_expired_poll_with_minority_cancel_confirms(monkeypatch):
+    poll_id = storage.create_poll(["A", "B", "C"], duration_hours=1)
+    storage.cast_vote(poll_id, "A", {"type": "soft"})
+
+    _time_travel(monkeypatch, 2)
+    poll = storage.get_poll(poll_id)
+    # 1 cancel of 3 is no majority: the event stands
+    assert poll["status"] == "confirmed"
+    assert poll["timed_out"] is True
+
+
+def test_vote_after_deadline_rejected_and_finalizes(monkeypatch):
+    poll_id = storage.create_poll(["A", "B"], duration_hours=1)
+    storage.cast_vote(poll_id, "A", {"type": "go"})
+
+    _time_travel(monkeypatch, 2)
+    with pytest.raises(storage.PollConcludedError):
+        storage.cast_vote(poll_id, "B", {"type": "hard"})
+    poll = storage.get_poll(poll_id)
+    assert poll["status"] == "confirmed"
+    assert poll["timed_out"] is True
+    assert "B" not in poll["votes"]
+
+
+def test_poll_without_deadline_never_expires():
+    # polls created before the deadline feature have no "deadline" key
+    poll_id = storage.create_poll(["A", "B"])
+    conn = storage._connect()
+    try:
+        conn.execute(
+            "UPDATE polls SET data = ? WHERE id = ?",
+            (
+                '{"name": "", "participants": ["A", "B"], '
+                '"votes": {}, "status": "active"}',
+                poll_id,
+            ),
+        )
+    finally:
+        conn.close()
+    poll = storage.get_poll(poll_id)
+    assert poll["status"] == "active"
+    _, accepted = storage.cast_vote(poll_id, "A", {"type": "go"})
+    assert accepted is True
 
 
 def test_concurrent_votes_all_recorded_once():
