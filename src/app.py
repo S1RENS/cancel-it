@@ -1,9 +1,17 @@
 import os
+import sys
 
-import streamlit as st
+# Some launchers (e.g. Streamlit Community Cloud) don't put this file's
+# directory on sys.path the way a local `streamlit run src/app.py` does,
+# which breaks the sibling imports below.
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
-import config
-import storage
+import streamlit as st  # noqa: E402
+
+import config  # noqa: E402
+import storage  # noqa: E402
 
 st.set_page_config(
     page_title=config.APP_TITLE,
