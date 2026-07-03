@@ -164,14 +164,40 @@ def render_outcome(poll: dict) -> None:
             "⏳ Time ran out before everyone voted, so the votes that "
             "were in decided the outcome."
         )
+    event = poll.get("name") or "The event"
     if poll["status"] == "cancelled":
         st.error("🛑 EVENT CANCELLED")
         st.write("The group has spoken. Sweatpants for everyone — no questions asked.")
+        verdict = f"🛑 {event} is CANCELLED — the group has secretly spoken."
     else:
         st.success("✅ EVENT IS ON")
         st.write("The group actually wants to go. See you there!")
         st.balloons()
+        verdict = f"✅ {event} is ON — the group actually wants to go."
+    st.write("**Spread the word:**")
+    st.code(f"{verdict} (decided anonymously via Cancel-It)", language=None)
+    st.caption(
+        "Copy this back into the group chat — no notifications are sent, "
+        "so nobody knows until someone tells them."
+    )
     st.caption("Individual votes are never revealed. That's the whole point.")
+
+
+@st.fragment(run_every="10s")
+def render_live_status(poll_id: str) -> None:
+    """Progress bar + countdown that refresh themselves; flips the whole
+    page to the outcome as soon as the poll concludes (or expires)."""
+    poll = storage.get_poll(poll_id)
+    if poll is None or poll["status"] != "active":
+        st.rerun(scope="app")
+        return
+    voted, total = len(poll["votes"]), len(poll["participants"])
+    st.progress(voted / total, text=f"{voted} of {total} votes are in")
+    if poll.get("deadline"):
+        st.caption(
+            f"⏳ Voting closes in {format_time_left(poll['deadline'])}. "
+            "If time runs out, the votes that are in decide."
+        )
 
 
 def render_poll_view(poll_id: str) -> None:
@@ -191,13 +217,7 @@ def render_poll_view(poll_id: str) -> None:
         st.subheader(poll["name"])
     st.write("Vote secretly. Nothing is revealed until the last vote is in.")
 
-    voted, total = len(poll["votes"]), len(poll["participants"])
-    st.progress(voted / total, text=f"{voted} of {total} votes are in")
-    if poll.get("deadline"):
-        st.caption(
-            f"⏳ Voting closes in {format_time_left(poll['deadline'])}. "
-            "If time runs out, the votes that are in decide."
-        )
+    render_live_status(poll_id)
 
     # All participants are always listed so the dropdown never leaks
     # who has already voted.
@@ -211,11 +231,10 @@ def render_poll_view(poll_id: str) -> None:
     if me is None:
         return
 
-    already_voted = me in poll["votes"] or st.session_state.get(f"voted::{poll_id}")
-    if already_voted:
+    # The database is the source of truth, so two people sharing one
+    # phone can each vote under their own name.
+    if me in poll["votes"]:
         st.info("Your vote is sealed. Waiting for the others…")
-        if st.button("🔄 Refresh"):
-            st.rerun()
         return
 
     choice = st.radio(
@@ -241,7 +260,6 @@ def render_poll_view(poll_id: str) -> None:
             storage.cast_vote(poll_id, me, vote)
         except storage.PollConcludedError:
             pass  # someone finished it meanwhile; rerun shows the outcome
-        st.session_state[f"voted::{poll_id}"] = True
         st.rerun()
 
 
