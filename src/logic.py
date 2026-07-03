@@ -1,7 +1,4 @@
-from typing import Dict
-
-
-def calculate_outcome(poll_data: Dict) -> None:
+def calculate_outcome(poll_data: dict) -> None:
     """
     Determines the outcome of a poll based on votes.
     Mutates poll_data["status"] in place.
@@ -65,5 +62,3 @@ def calculate_outcome(poll_data: Dict) -> None:
         poll_data["status"] = "cancelled"
     else:
         poll_data["status"] = "confirmed"
-
-    return
