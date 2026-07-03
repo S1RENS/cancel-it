@@ -37,6 +37,19 @@ def test_invalid_duration_rejected(bad_duration):
         storage.create_poll(["A", "B"], duration_hours=bad_duration)
 
 
+@pytest.mark.parametrize("duration_hours", [0.25, 24 * 7])
+def test_duration_range_minutes_to_a_week(duration_hours, monkeypatch):
+    poll_id = storage.create_poll(["A", "B"], duration_hours=duration_hours)
+    expected = time.time() + duration_hours * 3600
+    assert abs(storage.get_poll(poll_id)["deadline"] - expected) < 60
+
+    # expires right after its window, not before
+    _time_travel(monkeypatch, duration_hours * 0.9)
+    assert storage.get_poll(poll_id)["status"] == "active"
+    _time_travel(monkeypatch, duration_hours * 1.1)
+    assert storage.get_poll(poll_id)["status"] != "active"
+
+
 def test_poll_ids_are_short_and_unique():
     ids = {storage.create_poll(["A", "B"]) for _ in range(50)}
     assert len(ids) == 50

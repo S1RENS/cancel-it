@@ -39,18 +39,27 @@ VOTE_CHOICES = {
 }
 
 POLL_DURATIONS = {
+    "15 minutes": 0.25,
+    "30 minutes": 0.5,
     "1 hour": 1,
-    "3 hours": 3,
-    "6 hours": 6,
+    "2 hours": 2,
+    "4 hours": 4,
+    "8 hours": 8,
     "12 hours": 12,
     "24 hours": 24,
-    "48 hours": 48,
+    "2 days": 48,
+    "3 days": 72,
+    "5 days": 120,
+    "1 week": 168,
 }
 
 
 def format_time_left(deadline: float) -> str:
     seconds = max(0, int(deadline - time.time()))
     hours, minutes = divmod(seconds // 60, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d {hours}h"
     return f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
 
