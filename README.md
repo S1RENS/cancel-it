@@ -23,6 +23,28 @@ Cancel-It solves this by introducing private preference aggregation. It allows t
 - While voting is open, only the **count** of votes cast is visible ("3 of 5 votes are in") — never who voted or how.
 - When the last vote lands, everyone sees **only the verdict**: cancelled or confirmed. Individual votes are never revealed, and no tallies are shown.
 
+## ⏳ Voting window
+
+Every poll has a deadline, chosen at creation (1–48 hours, default 24). When
+time runs out, the poll concludes with the votes that are in — nobody can hold
+the group hostage by not voting. Silent participants count as going with the
+group (they don't add to the cancel tally, but they still count toward the
+majority threshold). Votes cast after the deadline are rejected.
+
+## 💾 Data & retention
+
+Polls live in a single SQLite file on the server (`data/cancelit.db` by
+default) as JSON blobs — no accounts, no emails, no analytics
+(`gatherUsageStats` is off). Retention:
+
+- Poll rows are **deleted 30 days after creation** (pruning runs whenever a new
+  poll is created). Until then, anyone with the link can view the poll page —
+  which shows only the vote count while active and only the verdict afterwards.
+- Raw votes are stored unencrypted in that file, so whoever operates the server
+  could technically read them. On Streamlit Community Cloud that disk is also
+  **ephemeral**: polls disappear entirely whenever the app is redeployed or the
+  container is recycled.
+
 ## ⚖️ Weighting
 
 | Option      | Icon | Weight (Towards Cancel) | Semantic Meaning                                                                                     |
