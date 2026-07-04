@@ -100,6 +100,55 @@ def parse_participants(raw: str) -> list[str]:
     return names
 
 
+def render_theory() -> None:
+    """The Abilene Paradox lore and the vote-counting rules, for the curious."""
+    with st.expander("🧠 The psychology & math behind this"):
+        st.markdown(
+            """
+##### The psychology: the Abilene Paradox
+
+Four friends drive an hour to Abilene for a mediocre dinner. On the way
+home they discover **none of them wanted to go** — each said yes because
+they thought the others wanted to. Groups routinely commit to plans nobody
+wants, because disagreeing out loud has a social cost.
+
+Cancel-It removes that cost: everyone reports their true preference in
+private, and only the group's collective verdict is ever revealed. That's
+also why there are **no notifications**, **no running tallies**, and no
+record of who voted or how — the moment votes become observable, honest
+voting ends.
+
+##### The math: how votes are counted
+
+| Option | Weight towards cancel | Meaning |
+| --- | --- | --- |
+| 🟢 Go | 0.0 | Actively fights cancellation |
+| 🟡 Soft cancel | 1.0 | "I'd rather not, but I'll follow the group" |
+| 🔴 Hard cancel | 1.0 | A definitive no |
+| 🔗 Wingman | inherits | Copies their person's final vote |
+
+The event is cancelled only when cancel votes are a **strict majority** —
+more than 50% of everyone invited, not just of those who voted.
+
+**Why does soft count as much as hard?** Take 3 friends: one Go, two Soft.
+At full weight that's 2 of 3 → cancelled, matching what most of the group
+wants. If soft only counted half, the score would be 1.0 against a 1.5
+threshold and the event would survive even though a majority wanted out —
+the exact paradox this tool exists to prevent.
+
+**Wingman chains** resolve before counting: if your person goes, you go;
+if they bail, you bail. Chains follow through (A needs B, B needs C), and
+a circle of people who each only go if the other goes resolves to
+*everyone goes* — the mutual pact.
+
+**Timeouts:** when the deadline passes, silence counts as going with the
+group. A non-voter never adds to the cancel tally but still counts in the
+majority threshold — so not voting can't cancel an event, and it can't
+block a real majority either.
+"""
+        )
+
+
 def render_create_view() -> None:
     st.title(f"{config.APP_ICON} {config.APP_TITLE}")
     st.write("**Find out if anyone actually wants to go — without asking.**")
@@ -111,6 +160,7 @@ def render_create_view() -> None:
             "3. If a majority would rather cancel, the event is cancelled — "
             "no names, no blame."
         )
+    render_theory()
 
     with st.form("create_form"):
         event_name = st.text_input(
@@ -267,6 +317,8 @@ def main() -> None:
     poll_id = st.query_params.get("poll")
     if poll_id:
         render_poll_view(poll_id)
+        st.write("")
+        render_theory()
     else:
         render_create_view()
 
